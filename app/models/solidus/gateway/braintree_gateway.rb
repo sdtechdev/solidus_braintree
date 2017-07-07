@@ -266,6 +266,11 @@ module Solidus
         params[:shipping] = map_address(options[:shipping_address])
       end
 
+      # If paypal populate the method nonce stored in the DB
+      if creditcard.cc_type == 'paypal'
+        options[:payment_method_nonce] = creditcard.gateway_payment_profile_id
+      end
+
       if options[:payment_method_nonce]
         params[:payment_method_nonce] = options[:payment_method_nonce]
       else
@@ -278,6 +283,7 @@ module Solidus
           options[:payment_method_nonce] || preferred_always_send_bill_address
         ) && options[:billing_address]
         params[:billing] = map_address(options[:billing_address])
+        return params # Return if nonce exists (Paypal. Don't need customer details below for checkout flow)
       end
 
       # if has profile, set the customer_id to the profile_id and delete the customer key
