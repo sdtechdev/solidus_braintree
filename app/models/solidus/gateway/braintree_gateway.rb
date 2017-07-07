@@ -54,13 +54,12 @@ module Solidus
       return if source.gateway_customer_profile_id.present? || payment.payment_method_nonce.nil?
 
       user = payment.order.user
-      email = user ? user.email : payment.order.email
-      address = (payment.source.address || payment.order.bill_address).try(:active_merchant_hash)
+      address = payment.order.bill_address.try(:active_merchant_hash)
 
       params = {
         first_name: source.first_name,
         last_name: source.last_name,
-        email: email,
+        email: payment.order.email,
         credit_card: {
           cardholder_name: source.name,
           billing_address: map_address(address),
@@ -69,34 +68,42 @@ module Solidus
             verify_card: true,
           },
         },
-        device_data: payment.order.braintree_device_data
       }
 
-      result = braintree_gateway.customer.create(params)
-
-      if result.success?
-        card = result.customer.payment_methods.last
+      # Paypal checkout process doesn't need the Braintree Customer
+      if payment.order.payment_method_subtype == 'paypal'
         source.tap do |solidus_cc|
-          if card.is_a?(::Braintree::PayPalAccount)
-            solidus_cc.cc_type = 'paypal'
-            data = {
-              email: card.email
-            }
-            solidus_cc.data = data.to_json
-          else
-            solidus_cc.name = card.cardholder_name
-            solidus_cc.cc_type = CARD_TYPE_MAPPING[card.card_type]
-            solidus_cc.month = card.expiration_month
-            solidus_cc.year = card.expiration_year
-            solidus_cc.last_digits = card.last_4
-          end
+          solidus_cc.cc_type = 'paypal'
           solidus_cc.payment_method = self
-          solidus_cc.gateway_customer_profile_id = result.customer.id
-          solidus_cc.gateway_payment_profile_id = card.token
+          solidus_cc.gateway_customer_profile_id = 'paypal'
+          solidus_cc.gateway_payment_profile_id = payment.payment_method_nonce
         end
+
         source.save!
       else
-        raise ::Spree::Core::GatewayError, result.message
+        result = braintree_gateway.customer.create(params)
+
+        if result.success?
+          card = result.customer.payment_methods.last
+          source.tap do |solidus_cc|
+            if card.is_a?(::Braintree::PayPalAccount)
+              solidus_cc.cc_type = 'paypal'
+              solidus_cc.name = card.email
+            else
+              solidus_cc.name = card.cardholder_name
+              solidus_cc.cc_type = card.card_type.downcase
+              solidus_cc.month = card.expiration_month
+              solidus_cc.year = card.expiration_year
+              solidus_cc.last_digits = card.last_4
+            end
+            solidus_cc.payment_method = self
+            solidus_cc.gateway_customer_profile_id = result.customer.id
+            solidus_cc.gateway_payment_profile_id = card.token
+          end
+          source.save!
+        else
+          raise ::Spree::Core::GatewayError, result.message
+        end
       end
     end
 
