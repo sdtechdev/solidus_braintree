@@ -6,7 +6,6 @@ module Solidus
     preference :merchant_id, :string
     preference :public_key, :string
     preference :private_key, :string
-    preference :always_send_bill_address, :boolean, default: false
     preference :transmit_shipping_address, :boolean, default: true
 
     CARD_TYPE_MAPPING = {
@@ -22,10 +21,6 @@ module Solidus
       'Visa' => 'visa',
     }
 
-    def method_type
-      'braintree'
-    end
-
     def gateway_options
       {
         environment: preferred_environment.to_sym,
@@ -34,6 +29,10 @@ module Solidus
         private_key: preferred_private_key,
         logger: ::Braintree::Configuration.logger.clone,
       }
+    end
+
+    def method_type
+      'braintree'
     end
 
     def braintree_gateway
@@ -133,19 +132,9 @@ module Solidus
     end
 
     def void(authorization_code, source = {}, options = {})
-      # Allows voiding payments that are in a checkout state
-      if authorization_code.nil?
-        # Fake response since we don't need to void anything with Braintree
-        ActiveMerchant::Billing::Response.new(
-          true,
-          "OK",
-          {},
-          {}
-        )
-      else
-        result = braintree_gateway.transaction.void(authorization_code)
-        handle_result(result)
-      end
+      result = braintree_gateway.transaction.void(authorization_code)
+
+      handle_result(result)
     end
 
     def credit(cents, source, authorization_code, options = {})
@@ -161,28 +150,6 @@ module Solidus
       ].include?(transaction.status)
     end
 
-    def card_number_placeholder
-      '4141 4141 4141 4141'
-    end
-
-    def expiration_date_placeholder
-      '01/2020'
-    end
-
-    def card_code_placeholder
-      '123'
-    end
-
-    def cancel(response)
-      if voidable?(response)
-        void(response)
-      else
-        handle_result(
-          braintree_gateway.transaction.refund(response)
-        )
-      end
-    end
-
     private
     def message_from_result(result)
       if result.success?
@@ -196,37 +163,17 @@ module Solidus
       end
     end
 
-    def build_results_hash(result)
-      if result.success?
-        {
-          authorization: result.transaction.id,
-          avs_result: {
-            code: result.transaction.avs_street_address_response_code
-          }
-        }
-      else
-        {}
-      end
-    end
-
     def handle_result(result)
       ActiveMerchant::Billing::Response.new(
         result.success?,
         message_from_result(result),
         {},
-        build_results_hash(result)
+        { authorization: (result.transaction.id if result.success?) }
       )
     end
 
     def map_address(addr)
-      full_name = addr.fetch(:name, "")
-      *first_name_parts, last_name = full_name.split(" ")
-      first_name = first_name_parts.join(" ")
-      last_name ||= ""
-
       {
-        first_name: first_name,
-        last_name: last_name,
         street_address: addr[:address1],
         extended_address: addr[:address2],
         locality: addr[:city],
@@ -262,9 +209,7 @@ module Solidus
       params[:options] ||= {}
       params[:amount] = amount(cents)
       params[:channel] ||= "Solidus"
-      if (options[:shipping_address] && preferred_transmit_shipping_address)
-        params[:shipping] = map_address(options[:shipping_address])
-      end
+      params[:shipping] = map_address(options[:shipping_address]) if options[:shipping_address]
 
       # If paypal populate the method nonce stored in the DB
       if creditcard.cc_type == 'paypal'
@@ -273,17 +218,10 @@ module Solidus
 
       if options[:payment_method_nonce]
         params[:payment_method_nonce] = options[:payment_method_nonce]
+        params[:billing] = map_address(options[:billing_address]) if options[:billing_address]
+        return params # Return if nonce exists (Paypal. Don't need customer details below for checkout flow)
       else
         params[:payment_method_token] = creditcard.gateway_payment_profile_id
-      end
-
-      # Send the bill address if we're using a nonce (i.e. doing a one-time
-      # payment) or if we're configured to always send the bill address
-      if (
-          options[:payment_method_nonce] || preferred_always_send_bill_address
-        ) && options[:billing_address]
-        params[:billing] = map_address(options[:billing_address])
-        return params # Return if nonce exists (Paypal. Don't need customer details below for checkout flow)
       end
 
       # if has profile, set the customer_id to the profile_id and delete the customer key
