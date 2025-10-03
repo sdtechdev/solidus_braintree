@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-module PermittedAttributesDecorator
+module Lib::SolidusBraintree::Spree::PermittedAttributesDecorator
   def self.prepended(base)
-    base.singleton_class.prepend SolidusBraintree::PermittedAttributesConcern
+    base.prepend ::SolidusBraintree::PermittedAttributesConcern
   end
 
-  Spree::PermittedAttributes.singleton_class.prepend(self)
+  ::Spree::PermittedAttributes.singleton_class.prepend(self)
 end
